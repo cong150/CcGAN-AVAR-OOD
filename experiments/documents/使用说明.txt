@@ -1,0 +1,324 @@
+════════════════════════════════════════════════════════════════
+                   CcGAN-AVAR OOD实验 - 详细使用说明
+════════════════════════════════════════════════════════════════
+
+## 一、实验背景
+
+你的研究目标：
+  验证完整CcGAN-AVAR模型在混合训练策略下的OOD泛化性能
+  - ID区域（0-45度）：使用充足的训练数据
+  - OOD区域（45-90度）：使用少量训练数据（每角度50张）
+
+对比三个实验：
+  1. Baseline: 只用0-45度训练 → 验证OOD问题存在
+  2. Simple-Mix: 0-45度充足 + 45-90度少量 → 简单混合方法
+  3. Oracle: 0-90度全部数据 → 性能上界
+
+核心发现：Simple-Mix有改善但不够，motivate未来更好的方法
+
+────────────────────────────────────────────────────────────────
+
+## 二、文件说明
+
+【文档类】
+  START_HERE.txt    - 入口指引
+  README.md         - 快速开始（推荐先看）
+  实验指南.md       - 详细的原理和分析
+  使用说明.txt      - 本文件
+
+【脚本类】
+  step1_train_aux_regression.sh  - 训练辅助回归模型（必须）
+  step2_prepare_data.sh          - 准备混合数据集
+  step3_baseline_id_only.sh      - 训练Baseline（只用0-45度）
+  step4_simple_mix.sh            - 训练Simple-Mix（混合数据）
+  step5_oracle_full.sh           - 训练Oracle（全部数据）
+
+【工具类】
+  prepare_ood_data.py            - 创建混合训练数据集
+
+────────────────────────────────────────────────────────────────
+
+## 三、执行流程（详细版）
+
+【步骤0：环境检查】
+  □ CUDA环境正常
+  □ GPU显存 ≥ 10GB
+  □ 数据集已下载: RC-49_64x64.h5
+  □ Python环境已配置（参考主README）
+
+【步骤1：训练辅助回归模型】⏱️ 1-2小时
+
+  1.1 修改配置
+      vim step1_train_aux_regression.sh
+      修改：
+        ROOT_PATH="/your/path/to/CcGAN-AVAR-OOD"
+        DATA_PATH="/your/data/path"
+
+  1.2 运行训练
+      bash step1_train_aux_regression.sh
+
+  1.3 检查输出
+      output/RC-49_64/aux_reg_model/ckpt_resnet18_epoch_200.pth
+      
+  ⚠️ 这一步必须完成！后续训练依赖这个模型
+
+【步骤2：准备混合数据集】⏱️ 1分钟
+
+  2.1 修改配置
+      vim step2_prepare_data.sh
+      修改：
+        DATA_PATH="/your/data/path/RC-49_64x64.h5"
+
+  2.2 运行准备
+      bash step2_prepare_data.sh
+
+  2.3 检查输出
+      experiments/data/RC-49_mixed_id_full_ood_50_64x64.h5
+      
+  说明：
+    - ID区域（0-45度）：包含全部训练数据
+    - OOD区域（45-90度）：每个角度50张图像
+
+【步骤3：训练Baseline】⏱️ 3-5小时
+
+  3.1 修改配置
+      vim step3_baseline_id_only.sh
+      修改ROOT_PATH和DATA_PATH
+
+  3.2 运行训练
+      bash step3_baseline_id_only.sh
+
+  3.3 监控进度
+      tail -f experiments/output_step3_baseline.txt
+
+  3.4 检查输出
+      output/RC-49_64/baseline_id_only/results/
+        ├── ckpt_niters_10000.pth
+        ├── ckpt_niters_20000.pth
+        ├── ckpt_niters_30000.pth
+        └── fake_data/
+
+【步骤4：训练Simple-Mix】⏱️ 3-5小时
+
+  4.1 修改配置
+      vim step4_simple_mix.sh
+      修改ROOT_PATH（DATA_PATH使用experiments/data）
+
+  4.2 运行训练
+      bash step4_simple_mix.sh
+
+  4.3 检查输出
+      output/RC-49_64/simple_mix_50/results/
+
+【步骤5：训练Oracle】⏱️ 3-5小时
+
+  5.1 修改配置
+      vim step5_oracle_full.sh
+      修改ROOT_PATH和DATA_PATH
+
+  5.2 运行训练
+      bash step5_oracle_full.sh
+
+  5.3 检查输出
+      output/RC-49_64/oracle_full/results/
+
+────────────────────────────────────────────────────────────────
+
+## 四、查看结果
+
+【方法1：查看训练过程样本】
+
+  # 查看训练过程样本（imgs_in_train目录）
+  # Baseline（只在0-45度应该好）
+  cd output/RC-49_64/baseline_id_only/imgs_in_train/
+  ls *.png
+  
+  # Simple-Mix（全范围应该都改善）
+  cd output/RC-49_64/simple_mix_50/imgs_in_train/
+  ls *.png
+  
+  # Oracle（全范围都很好）
+  cd output/RC-49_64/oracle_full/imgs_in_train/
+  ls *.png
+  
+  注意：fake_data目录需要运行评估才会生成数据
+        训练时只有imgs_in_train有样本
+
+【方法2：对比分析】
+
+  打开三个模型在不同迭代的样本图像，观察：
+  
+  1. 训练稳定性
+     - Loss曲线是否平滑
+     - 是否出现mode collapse
+  
+  2. 生成质量
+     - 图像清晰度
+     - 旋转角度的准确性
+     - 细节丰富程度
+  
+  3. OOD泛化能力
+     - Baseline在边界（40-45度）附近的表现
+     - Our Method是否改善了OOD区域
+     - 与Oracle的差距
+
+────────────────────────────────────────────────────────────────
+
+## 五、预期结果
+
+【定性观察】
+
+  Baseline（0-45度训练）:
+    0-30度: ⭐⭐⭐⭐⭐ 完美
+    30-45度: ⭐⭐⭐⭐ 很好
+    45-60度: ⭐⭐ 明显下降
+    60-90度: ⭐ 很差/崩溃
+
+  Simple-Mix（混合训练）:
+    0-30度: ⭐⭐⭐⭐⭐ 完美
+    30-45度: ⭐⭐⭐⭐⭐ 完美
+    45-60度: ⭐⭐⭐ 有改善（但不够理想）
+    60-90度: ⭐⭐ 略有改善（仍有差距）
+
+  Oracle（0-90度训练）:
+    0-90度: ⭐⭐⭐⭐⭐ 全范围完美
+
+【量化指标】
+
+  预期Simple-Mix比Baseline在OOD区域提升：
+    - 生成质量改善: 30-50%
+    - 但仍未达到Oracle: 只有60-70%
+    - 结论：简单混合有帮助但不够
+
+────────────────────────────────────────────────────────────────
+
+## 六、常见问题
+
+Q1: 找不到辅助回归模型
+A1: 确保先执行步骤1，训练完成后会生成：
+    output/RC-49_64/aux_reg_model/ckpt_resnet18_epoch_200.pth
+
+Q2: 显存不足 CUDA out of memory
+A2: 在训练脚本中减小batch size：
+    BATCH_SIZE_G=128 改为 BATCH_SIZE_G=64
+    BATCH_SIZE_D=128 改为 BATCH_SIZE_D=64
+
+Q3: 训练loss出现NaN
+A3: 可能的原因：
+    - 学习率过大 → 降低LR_G和LR_D
+    - 梯度爆炸 → 已设置max_grad_norm=1.0
+    - 数据问题 → 检查数据集是否正确
+
+Q4: 步骤4找不到混合数据集
+A4: 确保先执行步骤2，或检查：
+    experiments/data/RC-49_mixed_id_full_ood_50_64x64.h5
+
+Q5: 训练时间太长
+A5: 快速测试可以减少迭代次数：
+    NITERS=30000 改为 NITERS=5000
+    但这样结果可能不够好
+
+Q6: 如何调整OOD样本数量？
+A6: 修改步骤2脚本中的：
+    --ood_samples_per_label 50
+    改为其他值（如10, 100, 200）
+
+Q7: 可以只运行部分步骤吗？
+A7: 可以，但注意依赖关系：
+    - 步骤3、4、5都依赖步骤1（辅助模型）
+    - 步骤4依赖步骤2（混合数据集）
+    - 步骤3和5可以独立运行
+
+Q8: 训练中断了怎么恢复？
+A8: 修改对应脚本的RESUME_ITER参数：
+    1. 找到最后保存的checkpoint编号
+       例如：ckpt_niter_20000.pth → 编号是20000
+    2. 编辑训练脚本
+       RESUME_ITER=20000  # 改为对应编号
+    3. 重新运行脚本
+       bash step3_baseline_id_only.sh
+    训练会从20000次继续到30000次
+
+Q9: 如何使用多GPU？
+A9: 修改脚本开头的CUDA_VISIBLE_DEVICES：
+    export CUDA_VISIBLE_DEVICES=0,1,2,3  # 使用4张GPU
+    注意：评估网络会自动使用DataParallel
+          主训练逻辑默认单GPU
+
+────────────────────────────────────────────────────────────────
+
+## 七、技术细节
+
+【CcGAN-AVAR完整特性】
+
+  本实验使用完整的CcGAN-AVAR配置：
+
+  1. 自适应邻域（AVAR核心）
+     --use_ada_vic 
+     --ada_vic_type hybrid 
+     --min_n_per_vic 30 
+     --use_symm_vic
+
+  2. 辅助回归损失
+     --use_aux_reg_branch 
+     --use_aux_reg_model
+     --aux_reg_loss_type ei_hinge
+     --weight_d_aux_reg_loss 1.0
+     --weight_g_aux_reg_loss 1.0
+
+  3. 密度比估计正则化
+     --use_dre_reg 
+     --dre_lambda 1e-2
+     --weight_d_aux_dre_loss 1.0
+     --weight_g_aux_dre_loss 0.5
+
+  4. 训练增强
+     --use_ema          # 指数移动平均
+     --use_amp          # 混合精度训练
+     --use_diffaug      # 差分数据增强
+
+【混合数据集原理】
+
+  prepare_ood_data.py会：
+  1. 从原始数据集加载全部样本
+  2. 筛选ID区域（0-45度）的全部数据
+  3. 从OOD区域（45-90度）采样少量数据
+  4. 合并并保存为新的h5文件
+  5. 格式与原始数据集完全一致
+
+  优点：
+  - 无需修改源代码
+  - 直接用main.py训练
+  - 支持所有CcGAN-AVAR特性
+
+────────────────────────────────────────────────────────────────
+
+## 八、实验建议
+
+【第一次运行】
+  建议顺序执行全部5步，完整体验实验流程
+
+【后续优化】
+  可以尝试：
+  1. 调整OOD样本数量（10, 50, 100, 200）
+  2. 调整ID/OOD边界（如30-60度）
+  3. 尝试不同的训练迭代次数
+  4. 对比不同的损失权重
+
+【论文撰写】
+  实验完成后建议记录：
+  1. 三个模型的训练曲线
+  2. 不同角度的生成样本对比图
+  3. 定性和定量评估结果
+  4. 与baseline的改进幅度
+
+────────────────────────────────────────────────────────────────
+
+现在可以开始实验了！
+
+第一步：打开 README.md 快速了解
+第二步：修改 step1_train_aux_regression.sh
+第三步：bash step1_train_aux_regression.sh
+
+祝实验顺利！🚀
+
