@@ -90,6 +90,9 @@ for i in "${!EXPERIMENTS[@]}"; do
         --aux_reg_loss_type ei_hinge \
         --use_ada_vic --ada_vic_type hybrid --min_n_per_vic 50 --use_symm_vic \
         --use_dre_reg --dre_lambda 1e-2 \
+        --sigma_y 0.1 \
+        --lambda_perturb 0.1 \
+        --lambda_interp 0.1 \
         --do_eval \
         --dump_fake_for_h5 \
         --samp_batch_size 200 --eval_batch_size 200 \

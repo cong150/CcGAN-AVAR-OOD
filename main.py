@@ -244,6 +244,18 @@ trainer = Trainer(
     diffaug_policy = args.diffaug_policy,
     exp_seed = args.seed,
     num_workers = None,
+    # === Visdom 监控参数（可选） ===
+    # 说明：
+    # - 是否启用 Visdom：由命令行 --use_visdom 控制；
+    # - server / port / env 三个参数需要与启动 Visdom server 时保持一致。
+    use_visdom = args.use_visdom,
+    visdom_server = args.visdom_server,
+    visdom_port = args.visdom_port,
+    visdom_env = args.visdom_env,
+    # === OOD-增强：条件扰动和插值一致性正则参数 ===
+    sigma_y = args.sigma_y,
+    lambda_perturb = args.lambda_perturb,
+    lambda_interp = args.lambda_interp,
 )
 
 start = timeit.default_timer()

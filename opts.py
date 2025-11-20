@@ -69,6 +69,20 @@ def parse_opts():
     parser.add_argument('--use_diffaug', action='store_true', default=False) #use DiffAugment
     parser.add_argument('--diffaug_policy', type=str, default='color,translation,cutout') #DiffAugment policy
     
+    # === 可视化与监控（Visdom） ===
+    # 是否启用 Visdom 实时监控（loss 曲线等）。默认关闭，需要手动在脚本中加 --use_visdom。
+    parser.add_argument('--use_visdom', action='store_true', default=False,
+                        help='enable Visdom monitoring if True (default: False)')
+    # Visdom 服务器地址，一般是 http://localhost（如果通过 SSH 端口转发，在本地浏览器访问）。
+    parser.add_argument('--visdom_server', type=str, default='http://localhost',
+                        help='Visdom server address (default: http://localhost)')
+    # Visdom 端口，默认 8098，需要与 `python -m visdom.server -port XXXX` 保持一致。
+    parser.add_argument('--visdom_port', type=int, default=8098,
+                        help='Visdom server port (default: 8098)')
+    # Visdom 环境名（env），可以为不同实验设置不同 env，方便对比。
+    parser.add_argument('--visdom_env', type=str, default='ccgan_avar',
+                        help='Visdom environment name (default: ccgan_avar)')
+    
     # Exponential Moving Average
     parser.add_argument('--use_ema', action='store_true', default=False)
     parser.add_argument('--ema_update_after_step', type=int, default=0)
@@ -102,6 +116,13 @@ def parse_opts():
     parser.add_argument('--dre_ft_niters', type=int, default=1000, help='number of iterations for finetuning DRE branch')
     parser.add_argument('--dre_ft_lr', type=float, default=1e-4, help='learning rate for finetuning DRE branch')
     parser.add_argument('--dre_ft_batch_size', type=int, default=128, metavar='N')
+    
+    # === OOD-增强：条件扰动和插值一致性正则参数 ===
+    # ⚠️ 注意：这些默认值会被脚本中的参数覆盖（脚本参数优先级最高）
+    # 默认值设置为保守值，避免训练不稳定
+    parser.add_argument('--sigma_y', type=float, default=0.05, help='standard deviation for label perturbation (default: 0.04, 脚本参数会覆盖此值)')
+    parser.add_argument('--lambda_perturb', type=float, default=0.02, help='weight for perturbation consistency loss (default: 0.01, 脚本参数会覆盖此值)')
+    parser.add_argument('--lambda_interp', type=float, default=0.02, help='weight for interpolation consistency loss (default: 0.005, 脚本参数会覆盖此值)')
         
     
     ''' Sampling and Evaluation ''' 

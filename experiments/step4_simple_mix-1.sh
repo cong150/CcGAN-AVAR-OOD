@@ -8,12 +8,11 @@
 # - 使用步骤2生成的混合数据集
 # - 包含0-45度全部数据 + 45-90度每角度5张
 # - 目的：验证"简单混合少量OOD数据"是否足够
-# - 预期：比Baseline好一些，但仍不够理想
 ###############################################################################
 
 export NCCL_P2P_DISABLE=1
 export NCCL_IB_DISABLE=1
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=1
 
 # ==================== 配置区域（请修改这两行）====================
 ROOT_PATH="/home/wxc/nuist-lab/CcGAN-AVAR-OOD"
@@ -26,6 +25,11 @@ echo "╚═══════════════════════�
 echo ""
 
 # ==================== 实验参数 ====================
+# 🎯 手动设置项目名字 - 消融实验1：基线（无OOD正则）
+SETTING="simple_mix_baseline"
+VISDOM_ENV="${SETTING}"
+LOG_FILE="experiments/output_${SETTING}.txt"
+
 # 使用混合数据集，文件名必须是 RC-49_64x64.h5 格式
 # 我们使用符号链接或重命名
 MIXED_DATA_FILE="RC-49_mixed_id_full_ood_5_64x64.h5"
@@ -37,7 +41,6 @@ if [ ! -f "${DATA_PATH}/RC-49_64x64.h5" ] && [ -f "${DATA_PATH}/${MIXED_DATA_FIL
 fi
 
 DATA_NAME="RC-49"
-SETTING="simple_mix_5"  # 简单混合：ID全部 + OOD每角度5张
 SEED=2025
 
 # 训练区域：0-90度（混合数据集已经包含筛选后的数据）
@@ -56,11 +59,11 @@ DISC_CH=48
 
 # 训练参数
 NITERS=30000
-RESUME_ITER=0  # ⚠️ 恢复训练时改为checkpoint编号
+RESUME_ITER=0  #恢复训练时改为checkpoint编号
 BATCH_SIZE_G=256
 BATCH_SIZE_D=256
 NUM_D_STEPS=2
-LR_G=1e-4
+LR_G=8e-5
 LR_D=1e-4
 NUM_ACC_D=1
 NUM_ACC_G=1
@@ -68,6 +71,11 @@ NUM_ACC_G=1
 # Vicinal参数
 SIGMA=-1
 KAPPA=-2
+
+# === OOD-增强：条件扰动和插值一致性正则参数 ===
+SIGMA_Y=0.047              # 标签扰动的标准差
+LAMBDA_PERTURB=0       # 扰动一致性正则权重
+LAMBDA_INTERP=0        # 插值一致性正则权重
 
 # ==================== 开始训练 ====================
 python main.py \
@@ -106,9 +114,12 @@ python main.py \
     --use_aux_reg_branch --use_aux_reg_model \
     --aux_reg_loss_type ei_hinge --weight_d_aux_reg_loss 1.0 --weight_g_aux_reg_loss 1.0 \
     --use_dre_reg --dre_lambda 1e-2 --weight_d_aux_dre_loss 1.0 --weight_g_aux_dre_loss 0.5 \
-    --do_eval \
-    --samp_batch_size 200 --eval_batch_size 200 \
-    2>&1 | tee experiments/output_step4_ours.txt
+    --sigma_y "${SIGMA_Y}" \
+    --lambda_perturb "${LAMBDA_PERTURB}" \
+    --lambda_interp "${LAMBDA_INTERP}" \
+    --use_visdom \
+    --visdom_env "${VISDOM_ENV}" \
+    2>&1 | tee "${LOG_FILE}"
 
 # 清理符号链接
 if [ -L "${DATA_PATH}/RC-49_64x64.h5" ]; then

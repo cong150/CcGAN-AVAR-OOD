@@ -29,6 +29,13 @@ from utils import SimpleProgressBar, normalize_images, random_hflip, random_rota
 from DiffAugment_pytorch import DiffAugment
 from ema_pytorch import EMA
 
+# === Visdom 可视化（可选） ===
+# 为了不强制依赖 visdom，这里使用 try/except 安全导入。
+try:
+    from visdom import Visdom
+except ImportError:
+    Visdom = None
+
 class Trainer(object):
     def __init__(
         self,
@@ -64,6 +71,14 @@ class Trainer(object):
         use_amp = False,
         mixed_precision_type = 'fp16',
         adam_betas = (0.5, 0.999),
+        # === Visdom 监控相关参数（可选） ===
+        # 是否启用 Visdom 实时监控。
+        use_visdom = False,
+        # Visdom 服务端地址和端口（需与 python -m visdom.server 保持一致）。
+        visdom_server = "http://localhost",
+        visdom_port = 8098,
+        # Visdom 环境名称（env），可以用来区分不同实验。
+        visdom_env = "ccgan_avar",
         use_ema = False,
         ema_update_after_step = 1e30,
         ema_update_every = 10,
@@ -72,6 +87,12 @@ class Trainer(object):
         diffaug_policy = 'color,translation,cutout',
         exp_seed = 123,
         num_workers = None,
+        # === OOD-增强：条件扰动和插值一致性正则参数 ===
+        # ⚠️ 注意：这些默认值会被 main.py 传递的 args 参数覆盖（命令行/脚本参数优先级最高）
+        # 默认值设置为保守值，避免训练不稳定
+        sigma_y = 0.05,
+        lambda_perturb = 0.02,   # 默认0.01，脚本参数会覆盖此值
+        lambda_interp = 0.02,    # 默认0.005，脚本参数会覆盖此值
     ):
         super().__init__()
         
@@ -146,6 +167,45 @@ class Trainer(object):
         
         if self.aux_loss_params["use_dre_reg"]:
             self.dre_lambda = self.aux_loss_params["dre_lambda"]
+        
+        # === OOD-增强：条件扰动和插值一致性正则参数 ===
+        self.sigma_y = sigma_y
+        self.lambda_perturb = lambda_perturb
+        self.lambda_interp = lambda_interp
+        
+        # === Visdom 监控配置 ===
+        # 说明：
+        # - 这里不会强制要求用户一定安装 visdom，如果未安装则自动降级为不使用 Visdom。
+        # - 只有主进程（accelerator.is_main_process）会向 Visdom 写数据，避免多进程冲突。
+        self.use_visdom = bool(use_visdom) and (Visdom is not None)
+        self.visdom_server = visdom_server
+        self.visdom_port = visdom_port
+        self.visdom_env = visdom_env
+        self.viz = None               # Visdom 实例
+        self._visdom_inited = False   # 标记是否已经初始化成功
+        
+        # 仅在主进程尝试连接 Visdom，避免多进程重复初始化。
+        if use_visdom and Visdom is None and self.accelerator.is_main_process:
+            # 如果用户开启了 use_visdom，但环境里没有安装 visdom，给出提示但不报错。
+            print("\n[Visdom] WARNING: visdom is not installed. Please run `pip install visdom` to enable monitoring.")
+        if self.use_visdom and self.accelerator.is_main_process:
+            try:
+                # 创建 Visdom 客户端；env 用于区分不同实验。
+                self.viz = Visdom(server=self.visdom_server, port=self.visdom_port, env=self.visdom_env)
+                # 检查是否连接成功（例如端口不对或服务端没启动时会返回 False）。
+                if not self.viz.check_connection():
+                    print("\n[Visdom] WARNING: Cannot connect to Visdom server at {}:{} (env='{}'). Disable Visdom.".format(
+                        self.visdom_server, self.visdom_port, self.visdom_env))
+                    self.use_visdom = False
+                    self.viz = None
+                else:
+                    self._visdom_inited = True
+                    print("\n[Visdom] Connected: server={} port={} env='{}'".format(
+                        self.visdom_server, self.visdom_port, self.visdom_env))
+            except Exception as e:
+                print("\n[Visdom] WARNING: Failed to initialize Visdom: {}. Disable Visdom.".format(e))
+                self.use_visdom = False
+                self.viz = None
         
         ## visualize
         self.sample_freq = sample_freq
@@ -723,6 +783,12 @@ class Trainer(object):
 
                         d_loss /= float(self.num_grad_acc_d)
                     
+                    # === 数值稳定性检查：如果 d_loss 本身是 NaN 或 Inf，跳过这个 batch ===
+                    if torch.isnan(d_loss) or torch.isinf(d_loss):
+                        if self.accelerator.is_main_process and divisible_by(self.step, 20):
+                            print("\n[WARNING] Step {}: d_loss is NaN/Inf, skipping this batch.".format(self.step))
+                        continue
+                    
                     self.accelerator.backward(d_loss)
                 ##end for 
                 
@@ -771,6 +837,10 @@ class Trainer(object):
             ### Train Generator
             
             self.netG.train()
+            
+            # === OOD-增强：初始化损失值变量 ===
+            L_perturb_val = 0.0
+            L_interp_val = 0.0
            
             for _ in range(self.num_grad_acc_g):
                 
@@ -813,9 +883,95 @@ class Trainer(object):
                         g_dre_loss = (disc_out_dict["dre_output"].mean() - 1)**2 #f-divergence when f=(t-1)^2
                         g_loss += self.aux_loss_params["weight_g_aux_dre_loss"] * g_dre_loss
                         g_dre_loss_val = g_dre_loss.item()
-                        
+                    
+
+                    # === OOD-增强：条件扰动一致性正则（L_perturb） ===
+                    if self.lambda_perturb > 0:
+                        # 生成随机扰动：从正态分布采样，标准差为sigma_y
+                        delta = torch.randn_like(batch_target_labels) * self.sigma_y
+                        # 对原始标签施加扰动，并裁剪到[0,1]有效范围
+                        batch_target_labels_shifted = torch.clamp(batch_target_labels + delta, 0.0,
+                                                                  1.0)
+
+                        # x_origin 不需要梯度，detach 掉（因为这是原始生成图像）
+                        x_origin = batch_fake_images.detach()
+
+                        # x_shifted 保留梯度：用扰动后的标签生成图像
+                        x_shifted = self.netG(z, self.fn_y2h(batch_target_labels_shifted))
+
+                        # 计算L1距离损失：要求扰动前后的生成图像差异小
+                        L_perturb = torch.mean(torch.abs(x_origin - x_shifted))
+
+                        # 数值稳定性检查
+                        if not (torch.isnan(L_perturb) or torch.isinf(L_perturb)):
+                            # 将扰动损失加到生成器总损失中
+                            g_loss += self.lambda_perturb * L_perturb
+                            L_perturb_val = L_perturb.item()
+                        else:
+                            L_perturb_val = 0.0
+                    else:
+                        L_perturb_val = 0.0
+
+                    # === OOD-增强：条件插值一致性正则（L_interp） ===
+                    if self.lambda_interp > 0:
+                        # 获取batch大小
+                        batch_size = batch_target_labels.shape[0]
+
+                        # 生成随机插值系数λ，均匀分布在[0,1]之间
+                        lam = torch.rand(batch_size, device=batch_target_labels.device,
+                                         dtype=batch_target_labels.dtype)
+                        # 生成随机排列索引，用于选择配对的标签
+                        perm_idx = torch.randperm(batch_size, device=batch_target_labels.device)
+                        # 获取随机配对的标签y_perm
+                        y_perm = batch_target_labels[perm_idx]
+                        # 计算插值标签：y_mix = λ*y + (1-λ)*y_perm
+                        y_mix = lam * batch_target_labels + (1 - lam) * y_perm
+                        y_mix = torch.clamp(y_mix, 0.0, 1.0) # 确保在有效范围内
+
+                        # ----------- 关键修改：x1、x2 停梯度（No grad） ----------
+                        # x1: 原始标签y生成的图像（停梯度）
+                        with torch.no_grad():
+                            x1 = batch_fake_images.clone()
+                            # x2: 随机配对标签y_perm生成的图像（停梯度）
+                            x2 = self.netG(z, self.fn_y2h(y_perm))
+
+                        # ----------- 只让 x_mix 保留梯度 -------------------------
+                        # x_mix: 插值标签y_mix生成的图像（保留梯度）
+                        x_mix = self.netG(z, self.fn_y2h(y_mix))
+
+                        # 将λ从1D转换为4D，以便与图像tensor进行广播计算
+                        lam_4d = lam.view(batch_size, 1, 1, 1)
+
+                        # 计算线性插值图像：x_lin = λ*x1 + (1-λ)*x2
+                        x_lin = lam_4d * x1 + (1 - lam_4d) * x2
+
+                        # 计算MSE损失：要求插值标签生成的图像接近线性插值结果
+                        L_interp = torch.mean((x_mix - x_lin) ** 2)
+
+                        # 数值稳定性检查
+                        if not (torch.isnan(L_interp) or torch.isinf(L_interp)):
+                            g_loss += self.lambda_interp * L_interp
+                            L_interp_val = L_interp.item()
+                        else:
+                            L_interp_val = 0.0
+
+                        # 内存优化：释放中间变量
+                        del x2, x_mix, x_lin, lam_4d, y_perm, y_mix, lam, perm_idx
+                    else:
+                        L_interp_val = 0.0
+
                     g_loss /= float(self.num_grad_acc_g)
                     
+                    # === 数值稳定性检查：如果 g_loss 本身是 NaN 或 Inf，跳过这个 batch ===
+                    # 说明：训练后期可能出现梯度爆炸，导致 g_loss 变成 NaN。
+                    # 如果直接 backward，会让模型参数也变成 NaN，导致后续训练完全失败。
+                    if torch.isnan(g_loss) or torch.isinf(g_loss):
+                        # 打印警告，但继续训练（跳过这个 batch）
+                        if self.accelerator.is_main_process and divisible_by(self.step, 20):
+                            print("\n[WARNING] Step {}: g_loss is NaN/Inf, skipping this batch.".format(self.step))
+                        # 不执行 backward，直接跳过
+                        continue
+
                     self.accelerator.backward(g_loss)
             ##end for           
             self.accelerator.clip_grad_norm_(self.netG.parameters(), self.max_grad_norm)
@@ -833,11 +989,73 @@ class Trainer(object):
                 
                 # print loss
                 if divisible_by(self.step, 20):
-                    print ("\n CcGAN,%s,%s: [Iter %d/%d] [D loss: %.3f/%.3f/%.3f] [G loss: %.3f/%.3f/%.3f] [Time: %.3f]" % (self.net_name, self.loss_type, self.step, self.niters, d_adv_loss_val, d_reg_loss_val, d_dre_loss_val, g_adv_loss_val, g_reg_loss_val, g_dre_loss_val, timeit.default_timer()-start_time))
+                    # [原始代码] 保留原有格式，添加OOD增强损失项
+                    if self.lambda_perturb > 0 or self.lambda_interp > 0:
+                        print ("\n CcGAN,%s,%s: [Iter %d/%d] [D loss: %.3f/%.3f/%.3f] [G loss: %.3f/%.3f/%.3f] [L_perturb: %.4f] [L_interp: %.4f] [Time: %.3f]" % (self.net_name, self.loss_type, self.step, self.niters, d_adv_loss_val, d_reg_loss_val, d_dre_loss_val, g_adv_loss_val, g_reg_loss_val, g_dre_loss_val, L_perturb_val, L_interp_val, timeit.default_timer()-start_time))
+                    else:
+                        print ("\n CcGAN,%s,%s: [Iter %d/%d] [D loss: %.3f/%.3f/%.3f] [G loss: %.3f/%.3f/%.3f] [Time: %.3f]" % (self.net_name, self.loss_type, self.step, self.niters, d_adv_loss_val, d_reg_loss_val, d_dre_loss_val, g_adv_loss_val, g_reg_loss_val, g_dre_loss_val, timeit.default_timer()-start_time))
                     
                 if divisible_by(self.step, 500):
                     with open(log_filename, 'a') as file:
-                        file.write("CcGAN,%s,%s: [Iter %d/%d] [D loss: %.3f/%.3f/%.3f] [G loss: %.3f/%.3f/%.3f] [Time: %.3f] \n" % (self.net_name, self.loss_type, self.step, self.niters, d_adv_loss_val, d_reg_loss_val, d_dre_loss_val, g_adv_loss_val, g_reg_loss_val, g_dre_loss_val, timeit.default_timer()-start_time))
+                        # [原始代码] 保留原有格式，添加OOD增强损失项
+                        if self.lambda_perturb > 0 or self.lambda_interp > 0:
+                            file.write("CcGAN,%s,%s: [Iter %d/%d] [D loss: %.3f/%.3f/%.3f] [G loss: %.3f/%.3f/%.3f] [L_perturb: %.4f] [L_interp: %.4f] [Time: %.3f] \n" % (self.net_name, self.loss_type, self.step, self.niters, d_adv_loss_val, d_reg_loss_val, d_dre_loss_val, g_adv_loss_val, g_reg_loss_val, g_dre_loss_val, L_perturb_val, L_interp_val, timeit.default_timer()-start_time))
+                        else:
+                            file.write("CcGAN,%s,%s: [Iter %d/%d] [D loss: %.3f/%.3f/%.3f] [G loss: %.3f/%.3f/%.3f] [Time: %.3f] \n" % (self.net_name, self.loss_type, self.step, self.niters, d_adv_loss_val, d_reg_loss_val, d_dre_loss_val, g_adv_loss_val, g_reg_loss_val, g_dre_loss_val, timeit.default_timer()-start_time))
+                
+                # === Visdom：实时监控 loss 曲线 ===
+                # 说明：
+                # - 只在主进程 & 启用了 Visdom 时执行。
+                # - 使用 step 作为横坐标，将 D/G 的各个分量 loss，以及 OOD 正则项画到多个窗口。
+                if self.use_visdom and self._visdom_inited:
+                    try:
+                        def _visdom_update_mode(win_name):
+                            return 'append' if win_name in self._visdom_created_wins else None
+
+                        def _visdom_line(win_name, legend, values):
+                            Y = np.array([values], dtype=np.float32)
+                            X = np.array([[self.step] * len(values)], dtype=np.float32)
+                            self.viz.line(
+                                X=X,
+                                Y=Y,
+                                win=win_name,
+                                update=_visdom_update_mode(win_name),
+                                opts=dict(
+                                    title=win_name.replace('_', ' '),
+                                    xlabel='Iteration',
+                                    ylabel='Loss',
+                                    legend=legend
+                                )
+                            )
+                            self._visdom_created_wins.add(win_name)
+
+                        # 1) 判别器损失曲线：D_adv / D_reg / D_dre
+                        _visdom_line(
+                            win_name='D_loss',
+                            legend=['D_adv', 'D_reg', 'D_dre'],
+                            values=[d_adv_loss_val, d_reg_loss_val, d_dre_loss_val]
+                        )
+
+                        # 2) 生成器损失曲线：G_adv / G_reg / G_dre
+                        _visdom_line(
+                            win_name='G_loss',
+                            legend=['G_adv', 'G_reg', 'G_dre'],
+                            values=[g_adv_loss_val, g_reg_loss_val, g_dre_loss_val]
+                        )
+
+                        # 3) OOD 增强正则项：L_perturb / L_interp
+                        _visdom_line(
+                            win_name='OOD_regularization',
+                            legend=['L_perturb', 'L_interp'],
+                            values=[L_perturb_val, L_interp_val]
+                        )
+                    except Exception as e:
+                        # 如果 Visdom 在训练过程中意外中断（例如服务器关闭），
+                        # 不希望影响训练本身，因此捕获异常并关闭 Visdom。
+                        print("\n[Visdom] WARNING: Visdom logging failed at step {}: {}. Disable Visdom for the rest of training.".format(self.step, e))
+                        self.use_visdom = False
+                        self.viz = None
+                        self._visdom_inited = False
                 
                 if self.step != 0 and divisible_by(self.step, self.sample_freq):
                     if self.use_ema:
