@@ -1,0 +1,10 @@
+
+===================================================================================================Namespace(setting_name='simple_mix_5', root_path='/home/wxc/nuist-lab/CcGAN-AVAR-OOD', data_path='/home/wxc/datasets', seed=2025, num_workers=0, data_name='RC-49', imb_type='unimodal', min_label=0.0, max_label=90.0, num_channels=3, img_size=64, max_num_img_per_label=25, num_img_per_label_after_replica=0, net_name='SNGAN', dim_z=256, gene_ch=64, disc_ch=48, ch_multi_g=None, ch_multi_d=None, use_sn=False, use_attn=False, embed_type='resnet', dim_y=128, niters=0, resume_iter=30000, lr_g=0.0001, lr_d=0.0001, batch_size_disc=64, batch_size_gene=64, num_D_steps=1, max_grad_norm=1.0, save_freq=2000, sample_freq=2000, use_amp=False, mixed_precision_type='fp16', num_grad_acc_d=1, num_grad_acc_g=1, loss_type='hinge', kernel_sigma=np.float64(0.04736784919541229), threshold_type='hard', kappa=np.float64(0.0022222222222223476), nonzero_soft_weight_threshold=0.001, use_diffaug=False, diffaug_policy='color,translation,cutout', use_ema=False, ema_update_after_step=0, ema_update_every=10, ema_decay=0.9999, use_ada_vic=True, ada_vic_type='hybrid', min_n_per_vic=50, use_symm_vic=True, use_aux_reg_branch=True, use_aux_reg_model=True, aux_reg_loss_type='ei_hinge', aux_reg_loss_ei_hinge_factor=1.0, aux_reg_loss_huber_delta=-1, aux_reg_loss_huber_quantile=0.9, weight_d_aux_reg_loss=0.0, weight_g_aux_reg_loss=0.0, use_dre_reg=True, dre_lambda=0.01, weight_d_aux_dre_loss=0.0, weight_g_aux_dre_loss=0.0, dre_head_arch='MLP3', do_dre_ft=False, dre_ft_niters=1000, dre_ft_lr=0.0001, dre_ft_batch_size=128, sigma_y=0.05, lambda_perturb=0.02, lambda_interp=0.02, samp_batch_size=200, do_subsampling=False, do_eval=True, dump_fake_for_h5=True, dump_fake_for_niqe=False, niqe_dump_path='None', eval_batch_size=200)
+
+ Setting name: 2025-11-16_10-10-54.
+ Sampling time: 114.805
+ SFID: 0.098 (0.024)
+ LS: 2.421 (2.004)
+ Diversity: 3.605 (0.041)
+ FID: 0.023
+ IS (STD): 33.590 (0.150)

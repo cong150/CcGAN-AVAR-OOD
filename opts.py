@@ -120,9 +120,9 @@ def parse_opts():
     # === OOD-增强：条件扰动和插值一致性正则参数 ===
     # ⚠️ 注意：这些默认值会被脚本中的参数覆盖（脚本参数优先级最高）
     # 默认值设置为保守值，避免训练不稳定
-    parser.add_argument('--sigma_y', type=float, default=0.05, help='standard deviation for label perturbation (default: 0.04, 脚本参数会覆盖此值)')
-    parser.add_argument('--lambda_perturb', type=float, default=0.02, help='weight for perturbation consistency loss (default: 0.01, 脚本参数会覆盖此值)')
-    parser.add_argument('--lambda_interp', type=float, default=0.02, help='weight for interpolation consistency loss (default: 0.005, 脚本参数会覆盖此值)')
+    parser.add_argument('--sigma_y', type=float, default=0.047, help='standard deviation for label perturbation (default: 0.04, 脚本参数会覆盖此值)')
+    parser.add_argument('--lambda_perturb', type=float, default=0, help='weight for perturbation consistency loss (default: 0.01, 脚本参数会覆盖此值)')
+    parser.add_argument('--lambda_interp', type=float, default=0, help='weight for interpolation consistency loss (default: 0.005, 脚本参数会覆盖此值)')
         
     
     ''' Sampling and Evaluation ''' 

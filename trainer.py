@@ -90,9 +90,9 @@ class Trainer(object):
         # === OOD-增强：条件扰动和插值一致性正则参数 ===
         # ⚠️ 注意：这些默认值会被 main.py 传递的 args 参数覆盖（命令行/脚本参数优先级最高）
         # 默认值设置为保守值，避免训练不稳定
-        sigma_y = 0.05,
-        lambda_perturb = 0.02,   # 默认0.01，脚本参数会覆盖此值
-        lambda_interp = 0.02,    # 默认0.005，脚本参数会覆盖此值
+        sigma_y = 0.047,
+        lambda_perturb = 0,   # 默认0.01，脚本参数会覆盖此值
+        lambda_interp = 0,    # 默认0.005，脚本参数会覆盖此值
     ):
         super().__init__()
         
