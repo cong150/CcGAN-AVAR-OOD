@@ -12,35 +12,31 @@
 
 export NCCL_P2P_DISABLE=1
 export NCCL_IB_DISABLE=1
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=0
 
-# ==================== 配置区域（请修改这两行）====================
+# ==================== 配置区域====================
 ROOT_PATH="/home/wxc/nuist-lab/CcGAN-AVAR-OOD"
 DATA_PATH="experiments/data"  # 使用混合数据集的路径
 # ================================================================
 
 echo "╔══════════════════════════════════════════════════════════╗"
-echo "║    步骤4：训练Simple-Mix（简单混合基线）                  ║"
+echo "║    步骤4：训练Simple-Mix（ID 25个，OOD 1个）                 ║"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo ""
 
 # ==================== 实验参数 ====================
-# 🎯 手动设置项目名字 - 消融实验1：基线（无OOD正则）
-SETTING="simple_mix_baseline"
-VISDOM_ENV="${SETTING}"
-LOG_FILE="experiments/output_${SETTING}.txt"
-
 # 使用混合数据集，文件名必须是 RC-49_64x64.h5 格式
-# 我们使用符号链接或重命名
-MIXED_DATA_FILE="RC-49_mixed_id_full_ood_5_64x64.h5"
+# 使用符号链接
+MIXED_DATA_FILE="RC-49_mixed_id_full_ood_1_64x64.h5"
 
-# 创建符号链接（如果不存在）
+# 创建符号链接
 if [ ! -f "${DATA_PATH}/RC-49_64x64.h5" ] && [ -f "${DATA_PATH}/${MIXED_DATA_FILE}" ]; then
     echo "创建数据集符号链接..."
     ln -s "${MIXED_DATA_FILE}" "${DATA_PATH}/RC-49_64x64.h5"
 fi
 
 DATA_NAME="RC-49"
+SETTING="simple_mix_ema_nochange"  # 简单混合：ID全部 + OOD每角度5张
 SEED=2025
 
 # 训练区域：0-90度（混合数据集已经包含筛选后的数据）
@@ -59,7 +55,7 @@ DISC_CH=48
 
 # 训练参数
 NITERS=30000
-RESUME_ITER=10000  #恢复训练时改为checkpoint编号
+RESUME_ITER=0  #恢复训练时改为checkpoint编号
 BATCH_SIZE_G=256
 BATCH_SIZE_D=256
 NUM_D_STEPS=2
@@ -71,11 +67,6 @@ NUM_ACC_G=1
 # Vicinal参数
 SIGMA=-1
 KAPPA=-2
-
-# === OOD-增强：条件扰动和插值一致性正则参数 ===
-SIGMA_Y=0.047              # 标签扰动的标准差
-LAMBDA_PERTURB=0       # 扰动一致性正则权重
-LAMBDA_INTERP=0        # 插值一致性正则权重
 
 # ==================== 开始训练 ====================
 python main.py \
@@ -114,13 +105,9 @@ python main.py \
     --use_aux_reg_branch --use_aux_reg_model \
     --aux_reg_loss_type ei_hinge --weight_d_aux_reg_loss 1.0 --weight_g_aux_reg_loss 1.0 \
     --use_dre_reg --dre_lambda 1e-2 --weight_d_aux_dre_loss 1.0 --weight_g_aux_dre_loss 0.5 \
-    --sigma_y "${SIGMA_Y}" \
-    --lambda_perturb "${LAMBDA_PERTURB}" \
-    --lambda_interp "${LAMBDA_INTERP}" \
-    --use_visdom \
-    --visdom_port 8098 \
-    --visdom_env "${VISDOM_ENV}" \
-    2>&1 | tee "${LOG_FILE}"
+#    --do_eval \
+#    --samp_batch_size 200 --eval_batch_size 200 \
+    2>&1 | tee experiments/output_step4_ours.txt
 
 # 清理符号链接
 if [ -L "${DATA_PATH}/RC-49_64x64.h5" ]; then
@@ -136,10 +123,8 @@ echo "模型保存在:"
 echo "  ${ROOT_PATH}/output/RC-49_64/simple_mix_5/"
 echo ""
 echo "实验说明:"
-echo "  这个实验验证'简单混合少量OOD数据'的效果"
-echo "  预期：比Baseline改善，但可能仍不够理想"
+echo "  "
 echo ""
-echo "下一步：执行步骤5，训练Oracle（性能上界）"
-echo "  bash experiments/step5_oracle_full.sh"
+echo "下一步"
 echo ""
 

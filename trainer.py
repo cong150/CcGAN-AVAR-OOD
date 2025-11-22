@@ -29,13 +29,6 @@ from utils import SimpleProgressBar, normalize_images, random_hflip, random_rota
 from DiffAugment_pytorch import DiffAugment
 from ema_pytorch import EMA
 
-# === Visdom 可视化（可选） ===
-# 为了不强制依赖 visdom，这里使用 try/except 安全导入。
-try:
-    from visdom import Visdom
-except ImportError:
-    Visdom = None
-
 class Trainer(object):
     def __init__(
         self,
@@ -71,14 +64,6 @@ class Trainer(object):
         use_amp = False,
         mixed_precision_type = 'fp16',
         adam_betas = (0.5, 0.999),
-        # === Visdom 监控相关参数（可选） ===
-        # 是否启用 Visdom 实时监控。
-        use_visdom = False,
-        # Visdom 服务端地址和端口（需与 python -m visdom.server 保持一致）。
-        visdom_server = "http://localhost",
-        visdom_port = 8098,
-        # Visdom 环境名称（env），可以用来区分不同实验。
-        visdom_env = "ccgan_avar",
         use_ema = False,
         ema_update_after_step = 1e30,
         ema_update_every = 10,
@@ -172,40 +157,6 @@ class Trainer(object):
         self.sigma_y = sigma_y
         self.lambda_perturb = lambda_perturb
         self.lambda_interp = lambda_interp
-        
-        # === Visdom 监控配置 ===
-        # 说明：
-        # - 这里不会强制要求用户一定安装 visdom，如果未安装则自动降级为不使用 Visdom。
-        # - 只有主进程（accelerator.is_main_process）会向 Visdom 写数据，避免多进程冲突。
-        self.use_visdom = bool(use_visdom) and (Visdom is not None)
-        self.visdom_server = visdom_server
-        self.visdom_port = visdom_port
-        self.visdom_env = visdom_env
-        self.viz = None               # Visdom 实例
-        self._visdom_inited = False   # 标记是否已经初始化成功
-        
-        # 仅在主进程尝试连接 Visdom，避免多进程重复初始化。
-        if use_visdom and Visdom is None and self.accelerator.is_main_process:
-            # 如果用户开启了 use_visdom，但环境里没有安装 visdom，给出提示但不报错。
-            print("\n[Visdom] WARNING: visdom is not installed. Please run `pip install visdom` to enable monitoring.")
-        if self.use_visdom and self.accelerator.is_main_process:
-            try:
-                # 创建 Visdom 客户端；env 用于区分不同实验。
-                self.viz = Visdom(server=self.visdom_server, port=self.visdom_port, env=self.visdom_env)
-                # 检查是否连接成功（例如端口不对或服务端没启动时会返回 False）。
-                if not self.viz.check_connection():
-                    print("\n[Visdom] WARNING: Cannot connect to Visdom server at {}:{} (env='{}'). Disable Visdom.".format(
-                        self.visdom_server, self.visdom_port, self.visdom_env))
-                    self.use_visdom = False
-                    self.viz = None
-                else:
-                    self._visdom_inited = True
-                    print("\n[Visdom] Connected: server={} port={} env='{}'".format(
-                        self.visdom_server, self.visdom_port, self.visdom_env))
-            except Exception as e:
-                print("\n[Visdom] WARNING: Failed to initialize Visdom: {}. Disable Visdom.".format(e))
-                self.use_visdom = False
-                self.viz = None
         
         ## visualize
         self.sample_freq = sample_freq
@@ -1002,60 +953,6 @@ class Trainer(object):
                             file.write("CcGAN,%s,%s: [Iter %d/%d] [D loss: %.3f/%.3f/%.3f] [G loss: %.3f/%.3f/%.3f] [L_perturb: %.4f] [L_interp: %.4f] [Time: %.3f] \n" % (self.net_name, self.loss_type, self.step, self.niters, d_adv_loss_val, d_reg_loss_val, d_dre_loss_val, g_adv_loss_val, g_reg_loss_val, g_dre_loss_val, L_perturb_val, L_interp_val, timeit.default_timer()-start_time))
                         else:
                             file.write("CcGAN,%s,%s: [Iter %d/%d] [D loss: %.3f/%.3f/%.3f] [G loss: %.3f/%.3f/%.3f] [Time: %.3f] \n" % (self.net_name, self.loss_type, self.step, self.niters, d_adv_loss_val, d_reg_loss_val, d_dre_loss_val, g_adv_loss_val, g_reg_loss_val, g_dre_loss_val, timeit.default_timer()-start_time))
-                
-                # === Visdom：实时监控 loss 曲线 ===
-                # 说明：
-                # - 只在主进程 & 启用了 Visdom 时执行。
-                # - 使用 step 作为横坐标，将 D/G 的各个分量 loss，以及 OOD 正则项画到多个窗口。
-                if self.use_visdom and self._visdom_inited:
-                    try:
-                        def _visdom_update_mode(win_name):
-                            return 'append' if win_name in self._visdom_created_wins else None
-
-                        def _visdom_line(win_name, legend, values):
-                            Y = np.array([values], dtype=np.float32)
-                            X = np.array([[self.step] * len(values)], dtype=np.float32)
-                            self.viz.line(
-                                X=X,
-                                Y=Y,
-                                win=win_name,
-                                update=_visdom_update_mode(win_name),
-                                opts=dict(
-                                    title=win_name.replace('_', ' '),
-                                    xlabel='Iteration',
-                                    ylabel='Loss',
-                                    legend=legend
-                                )
-                            )
-                            self._visdom_created_wins.add(win_name)
-
-                        # 1) 判别器损失曲线：D_adv / D_reg / D_dre
-                        _visdom_line(
-                            win_name='D_loss',
-                            legend=['D_adv', 'D_reg', 'D_dre'],
-                            values=[d_adv_loss_val, d_reg_loss_val, d_dre_loss_val]
-                        )
-
-                        # 2) 生成器损失曲线：G_adv / G_reg / G_dre
-                        _visdom_line(
-                            win_name='G_loss',
-                            legend=['G_adv', 'G_reg', 'G_dre'],
-                            values=[g_adv_loss_val, g_reg_loss_val, g_dre_loss_val]
-                        )
-
-                        # 3) OOD 增强正则项：L_perturb / L_interp
-                        _visdom_line(
-                            win_name='OOD_regularization',
-                            legend=['L_perturb', 'L_interp'],
-                            values=[L_perturb_val, L_interp_val]
-                        )
-                    except Exception as e:
-                        # 如果 Visdom 在训练过程中意外中断（例如服务器关闭），
-                        # 不希望影响训练本身，因此捕获异常并关闭 Visdom。
-                        print("\n[Visdom] WARNING: Visdom logging failed at step {}: {}. Disable Visdom for the rest of training.".format(self.step, e))
-                        self.use_visdom = False
-                        self.viz = None
-                        self._visdom_inited = False
                 
                 if self.step != 0 and divisible_by(self.step, self.sample_freq):
                     if self.use_ema:
